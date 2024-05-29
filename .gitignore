@@ -5,3 +5,7 @@ mp3
 *.mp3
 .DS_Store
 *.cnf
+test
+test2
+audio_segments
+results

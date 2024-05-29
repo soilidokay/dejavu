@@ -100,3 +100,7 @@ FINGERPRINT_REDUCTION = 20
 
 # Number of results being returned for file recognition
 TOPN = 2
+# Number of results then count and groupy
+TOPQ = 5
+
+THROLD_CONTINUOUS_ARRAY = 2
