@@ -9,3 +9,6 @@ test
 test2
 audio_segments
 results
+**/*.wav
+**/*.mp3
+**/*.zip

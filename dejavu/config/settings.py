@@ -39,6 +39,7 @@ FIELD_SONGNAME = 'song_name'
 FIELD_FINGERPRINTED = "fingerprinted"
 FIELD_FILE_SHA1 = 'file_sha1'
 FIELD_TOTAL_HASHES = 'total_hashes'
+FIELD_OFFSETS = 'offsets'
 
 # TABLE FINGERPRINTS
 FINGERPRINTS_TABLENAME = "fingerprints"
@@ -70,7 +71,7 @@ DEFAULT_OVERLAP_RATIO = 0.5
 
 # Degree to which a fingerprint can be paired with its neighbors. Higher values will
 # cause more fingerprints, but potentially better accuracy.
-DEFAULT_FAN_VALUE = 5  # 15 was the original value.
+DEFAULT_FAN_VALUE = 10  # 15 was the original value.
 
 # Minimum amplitude in spectrogram in order to be considered a peak.
 # This can be raised to reduce number of fingerprints, but can negatively
@@ -99,8 +100,9 @@ PEAK_SORT = True
 FINGERPRINT_REDUCTION = 20
 
 # Number of results being returned for file recognition
-TOPN = 2
+TOPN = 5
 # Number of results then count and groupy
 TOPQ = 5
 
-THROLD_CONTINUOUS_ARRAY = 2
+THROLD_CONTINUOUS_ARRAY = 1.5
+QUERY_MIN_SECOND = 3

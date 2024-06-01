@@ -6,8 +6,9 @@ from typing import List, Tuple
 import numpy as np
 from pydub import AudioSegment
 from pydub.utils import audioop
-
+from pydub.effects import normalize
 from dejavu.third_party import wavio
+from dejavu.ultilities.helper import normalize_audio_pypub, normalize_audio_wavio
 
 
 def unique_hash(file_path: str, block_size: int = 2**20) -> str:
@@ -67,7 +68,8 @@ def read(file_name: str, limit: int = None) -> Tuple[List[List[int]], int, str]:
     """
     # pydub does not support 24-bit wav files, use wavio when this occurs
     try:
-        audiofile = AudioSegment.from_file(file_name)
+        # audiofile = AudioSegment.from_file(file_name)
+        audiofile = normalize_audio_pypub(file_name)
 
         if limit:
             audiofile = audiofile[:limit * 1000]
@@ -78,9 +80,10 @@ def read(file_name: str, limit: int = None) -> Tuple[List[List[int]], int, str]:
         for chn in range(audiofile.channels):
             channels.append(data[chn::audiofile.channels])
 
-        audiofile.frame_rate
     except audioop.error:
+        raise
         _, _, audiofile = wavio.readwav(file_name)
+        # _, _, audiofile = normalize_audio_wavio(file_name)
 
         if limit:
             audiofile = audiofile[:limit * 1000]

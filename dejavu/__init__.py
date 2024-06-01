@@ -12,12 +12,12 @@ from dejavu.ultilities import helper
 import dejavu.logic.decoder as decoder
 from dejavu.base_classes.base_database import get_database
 from dejavu.config.settings import (DEFAULT_FS, DEFAULT_OVERLAP_RATIO,
-                                    DEFAULT_WINDOW_SIZE, FIELD_FILE_SHA1,
+                                    DEFAULT_WINDOW_SIZE, FIELD_FILE_SHA1, FIELD_OFFSETS,
                                     FIELD_TOTAL_HASHES,
                                     FINGERPRINTED_CONFIDENCE,
                                     FINGERPRINTED_HASHES, HASHES_MATCHED,
                                     INPUT_CONFIDENCE, INPUT_HASHES, OFFSET,
-                                    OFFSET_SECS, SONG_ID, SONG_NAME, THROLD_CONTINUOUS_ARRAY, TOPN, TOPQ)
+                                    OFFSET_SECS, QUERY_MIN_SECOND, SONG_ID, SONG_NAME, THROLD_CONTINUOUS_ARRAY, TOPN, TOPQ)
 from dejavu.logic.fingerprint import fingerprint
 
 
@@ -102,7 +102,7 @@ class Dejavu:
         # Loop till we have all of them
         while True:
             try:
-                song_name, hashes, file_hash = next(iterator)
+                song_name, hashes, file_hash, extension = next(iterator)
             except multiprocessing.TimeoutError:
                 continue
             except StopIteration:
@@ -112,7 +112,7 @@ class Dejavu:
                 # Print traceback because we can't reraise it here
                 traceback.print_exc(file=sys.stdout)
             else:
-                sid = self.db.insert_song(song_name, file_hash, len(hashes))
+                sid = self.db.insert_song(song_name+extension, file_hash, len(hashes))
 
                 self.db.insert_hashes(sid, hashes)
                 self.db.set_song_fingerprinted(sid)
@@ -242,7 +242,11 @@ class Dejavu:
     def to_timetamp(self, offset):
         return round(float(offset) / DEFAULT_FS * DEFAULT_WINDOW_SIZE * DEFAULT_OVERLAP_RATIO, 5)
 
-    def get_songs_offset(self, songs_match, throld_find: int = THROLD_CONTINUOUS_ARRAY):
+    def get_songs_offset(self, songs_match, throld_find: int = THROLD_CONTINUOUS_ARRAY, min_second=QUERY_MIN_SECOND):
+        """
+                0               1
+            count   array_offsets
+        """
         offsets_o = map(lambda x: x[2:], songs_match)
         for offsets in offsets_o:
             times = [(self.to_timetamp(o[0]), self.to_timetamp(o[1])) for o in offsets[1]]
@@ -262,13 +266,13 @@ class Dejavu:
 
             temps_seg2 = np.array(temps_seg).reshape(-1, 2, 2)
 
-            temps_seg2 = list(filter(lambda x: x[0][1] - x[0][0] > 1, temps_seg2))
+            temps_seg2 = list(filter(lambda x: int(x[0][1] - x[0][0]) >= min_second, temps_seg2))
             if len(temps_seg2) < 1:
                 continue
-            yield temps_seg2
+            yield offsets[0], temps_seg2
 
     def align_matches_attach_offset(self, matches: List[Tuple[int, int]], dedup_hashes: Dict[str, int], queried_hashes: int,
-                                    topn: int = TOPN, topq: int = TOPQ) -> List[Dict[str, any]]:
+                                    topn: int = TOPN, topq: int = TOPQ, throld_find: int = THROLD_CONTINUOUS_ARRAY, min_second=QUERY_MIN_SECOND) -> List[Dict[str, any]]:
         """
         Finds hash matches that align in time with other matches and finds
         consensus about which hashes are "true" signal from the audio.
@@ -281,23 +285,45 @@ class Dejavu:
         :return: a list of dictionaries (based on topn) with match information.
         """
         # count offset occurrences per song and keep only the maximum ones.
+        """
+            0              1       2       3
+         song   delta_offset    off1    off2
+            1    1                 1    2
+            1    2                 1    3
+            1    2                 2    4
+            2    3                 2    5
+        """
         sorted_matches = sorted(matches, key=lambda m: (m[0], m[1]))
 
         def generate_group(group):
             group = list(group)
             return (len(group), [k for k, g in groupby(sorted([g[2:] for g in group], key=lambda x: x[0]), lambda x: (x[0], x[1]))])
-        counts = [(*key, *generate_group(group)) for key, group in groupby(sorted_matches, key=lambda m: (m[0], m[1]))]
 
+        """
+        count (song,delta_offset) :
+            0              1        2        3
+         song   delta_offset    count   offset
+            1    1              1       [(1,2)]
+            1    2              2       [(1,3),(2,4)]
+            2    3              1       [(2,5)]
+        """
+        counts = [(*key, *generate_group(group)) for key, group in groupby(sorted_matches, key=lambda m: (m[0], m[1]))]
+        """
+         song 1: [ (1,2,2,[(1,3),(2,4)]),(1,1,1,[(1,2)]) ]
+         song 2: [ (  2,      3,                1,    [(2,5)]) ]
+                      ^       ^                 ^        ^
+                    SongId   delta_off       count   array_offset
+        """
         songs_matches = sorted(
             [list(sorted(list(group), key=lambda g: g[2], reverse=True))[:topq]
-             for key, group in groupby(counts, key=lambda count: count[0])],
+             for key, group in groupby(counts, key=lambda count: count[0])],  # group by song_id
             key=lambda count: count[0][2], reverse=True
         )
 
         songs_result = []
         for songs_match in songs_matches[0:topn]:  # consider topn elements in the result
 
-            offsets = list(self.get_songs_offset(songs_match))
+            offsets = list(self.get_songs_offset(songs_match, throld_find, min_second))
 
             if len(offsets) < 1:
                 continue
@@ -321,7 +347,7 @@ class Dejavu:
                 # Percentage regarding hashes matched vs hashes fingerprinted in the db.
                 FINGERPRINTED_CONFIDENCE: round(hashes_matched / song_hashes, 2),
                 FIELD_FILE_SHA1: song.get(FIELD_FILE_SHA1, None).encode("utf8"),
-                "offsets": offsets
+                FIELD_OFFSETS: offsets
             }
 
             songs_result.append(song)
@@ -345,7 +371,7 @@ class Dejavu:
 
         fingerprints, file_hash = Dejavu.get_file_fingerprints(file_name, limit, print_output=True)
 
-        return song_name, fingerprints, file_hash
+        return song_name, fingerprints, file_hash, extension
 
     @staticmethod
     def get_file_fingerprints(file_name: str, limit: int, print_output: bool = False):

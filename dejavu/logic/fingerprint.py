@@ -16,6 +16,7 @@ from dejavu.config.settings import (CONNECTIVITY_MASK, DEFAULT_AMP_MIN,
                                     FINGERPRINT_REDUCTION, MAX_HASH_TIME_DELTA,
                                     MIN_HASH_TIME_DELTA,
                                     PEAK_NEIGHBORHOOD_SIZE, PEAK_SORT)
+from dejavu.ultilities.helper import normalize_frequencies, normalize_frequencies_ampli, normalize_frequency
 
 
 def fingerprint(channel_samples: List[int],
@@ -52,7 +53,7 @@ def fingerprint(channel_samples: List[int],
     return generate_hashes(local_maxima, fan_value=fan_value)
 
 
-def get_2D_peaks(arr2D: np.array, plot: bool = False, amp_min: int = DEFAULT_AMP_MIN)\
+def get_2D_peaks_base(arr2D: np.array, plot: bool = False, amp_min: int = DEFAULT_AMP_MIN, out_spec_filename: str = "Spectrogram")\
         -> List[Tuple[List[int], List[int]]]:
     """
     Extract maximum peaks from the spectogram matrix (arr2D).
@@ -104,7 +105,6 @@ def get_2D_peaks(arr2D: np.array, plot: bool = False, amp_min: int = DEFAULT_AMP
 
     freqs_filter = freqs[filter_idxs]
     times_filter = times[filter_idxs]
-
     if plot:
         # scatter of the peaks
         fig, ax = plt.subplots()
@@ -114,9 +114,23 @@ def get_2D_peaks(arr2D: np.array, plot: bool = False, amp_min: int = DEFAULT_AMP
         ax.set_ylabel('Frequency')
         ax.set_title("Spectrogram")
         plt.gca().invert_yaxis()
-        plt.show()
+
+        plt.savefig(out_spec_filename)
 
     return list(zip(freqs_filter, times_filter))
+
+
+def get_2D_peaks(arr2D: np.array, plot: bool = False, amp_min: int = DEFAULT_AMP_MIN)\
+        -> List[Tuple[List[int], List[int]]]:
+    """
+    Extract maximum peaks from the spectogram matrix (arr2D).
+
+    :param arr2D: matrix representing the spectogram.
+    :param plot: for plotting the results.
+    :param amp_min: minimum amplitude in spectrogram in order to be considered a peak.
+    :return: a list composed by a list of frequencies and times.
+    """
+    return get_2D_peaks_base(arr2D, plot, amp_min)
 
 
 def generate_hashes(peaks: List[Tuple[int, int]], fan_value: int = DEFAULT_FAN_VALUE) -> List[Tuple[str, int]]:
@@ -138,6 +152,10 @@ def generate_hashes(peaks: List[Tuple[int, int]], fan_value: int = DEFAULT_FAN_V
         peaks.sort(key=itemgetter(1))
 
     hashes = []
+
+    f_min = min(map(lambda x: x[idx_freq], peaks))
+    f_max = max(map(lambda x: x[idx_freq], peaks))
+
     for i in range(len(peaks)):
         for j in range(1, fan_value):
             if (i + j) < len(peaks):
@@ -149,8 +167,81 @@ def generate_hashes(peaks: List[Tuple[int, int]], fan_value: int = DEFAULT_FAN_V
                 t_delta = t2 - t1
 
                 if MIN_HASH_TIME_DELTA <= t_delta <= MAX_HASH_TIME_DELTA:
+
                     h = hashlib.sha1(f"{str(freq1)}|{str(freq2)}|{str(t_delta)}".encode('utf-8'))
 
                     hashes.append((h.hexdigest()[0:FINGERPRINT_REDUCTION], t1))
 
     return hashes
+
+
+def fingerprint_test(channel_samples: List[int],
+                     Fs: int = DEFAULT_FS,
+                     wsize: int = DEFAULT_WINDOW_SIZE,
+                     wratio: float = DEFAULT_OVERLAP_RATIO,
+                     fan_value: int = DEFAULT_FAN_VALUE,
+                     amp_min: int = DEFAULT_AMP_MIN, out_spec_filename: str = "") -> List[Tuple[str, int]]:
+    """
+    FFT the channel, log transform output, find local maxima, then return locally sensitive hashes.
+
+    :param channel_samples: channel samples to fingerprint.
+    :param Fs: audio sampling rate.
+    :param wsize: FFT windows size.
+    :param wratio: ratio by which each sequential window overlaps the last and the next window.
+    :param fan_value: degree to which a fingerprint can be paired with its neighbors.
+    :param amp_min: minimum amplitude in spectrogram in order to be considered a peak.
+    :return: a list of hashes with their corresponding offsets.
+    """
+    # FFT the signal and extract frequency components
+    arr2D = mlab.specgram(
+        channel_samples,
+        NFFT=wsize,
+        Fs=Fs,
+        window=mlab.window_hanning,
+        noverlap=int(wsize * wratio))[0]
+
+    # Apply log transform since specgram function returns linear array. 0s are excluded to avoid np warning.
+    arr2D = 10 * np.log10(arr2D, out=np.zeros_like(arr2D), where=(arr2D != 0))
+
+    local_maxima = get_2D_peaks_base(arr2D, True, amp_min, out_spec_filename)
+    # return hashes
+    return generate_hashes(local_maxima, fan_value=fan_value)
+
+
+def fingerprint_draw(channel_samples: List[int],
+                     Fs: int = DEFAULT_FS,
+                     wsize: int = DEFAULT_WINDOW_SIZE,
+                     wratio: float = DEFAULT_OVERLAP_RATIO,
+                     fan_value: int = DEFAULT_FAN_VALUE,
+                     amp_min: int = DEFAULT_AMP_MIN, out_spec_filename: str = "") -> List[Tuple[str, int]]:
+    """
+    FFT the channel, log transform output, find local maxima, then return locally sensitive hashes.
+
+    :param channel_samples: channel samples to fingerprint.
+    :param Fs: audio sampling rate.
+    :param wsize: FFT windows size.
+    :param wratio: ratio by which each sequential window overlaps the last and the next window.
+    :param fan_value: degree to which a fingerprint can be paired with its neighbors.
+    :param amp_min: minimum amplitude in spectrogram in order to be considered a peak.
+    :return: a list of hashes with their corresponding offsets.
+    """
+    # Compute the spectrogram
+    arr2D, freqs, t = mlab.specgram(
+        channel_samples,
+        NFFT=wsize,
+        Fs=Fs,
+        window=mlab.window_hanning,
+        noverlap=int(wsize * wratio)
+    )
+
+    # Apply log transform to the spectrogram
+    arr2D = 10 * np.log10(arr2D, out=np.zeros_like(arr2D), where=(arr2D != 0))
+
+    # Plot the spectrogram
+    plt.figure(figsize=(10, 6))
+    plt.imshow(arr2D, extent=[t[0], t[-1], freqs[0], freqs[-1]], aspect='auto', cmap='inferno')
+    plt.xlabel('Time (s)')
+    plt.ylabel('Frequency (Hz)')
+    plt.title('Spectrogram')
+    plt.colorbar(label='Intensity (dB)')
+    plt.savefig(out_spec_filename)
