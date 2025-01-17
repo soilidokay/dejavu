@@ -14,19 +14,20 @@ config = {
     "database_type": "postgres"
 }
 
-data_dir = 'app/data'
+data_dir = 'app/data2'
 result_dir = 'app/results'
 
 if __name__ == '__main__':
     djv = Dejavu(config)
 
     # recognize_file = 'app/data/Without My Money.mp3'
-    recognize_file = 'app/query/Without His Friends1.mp3'
+    # recognize_file = 'app/query/Without His Friends1.mp3'
+    recognize_file = 'app/query/gsnv.mp3'
     # recognize_file = 'app/query/Without His Friends.wav'
     # recognize_file = 'mp3/3z2Ovv5OV4U.mp3'
     # recognize_file = 'app/data/Without Your Everythi.wav'
 
-    frao = FileRecognizerAttchOffset(djv, topq=1, throld_find=2)
+    frao = FileRecognizerAttchOffset(djv, topq=1, throld_find=10)
     results = frao.recognize_result(recognize_file)
 
     recreate_folder(result_dir)

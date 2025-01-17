@@ -14,7 +14,8 @@ config = {
     "database_type": "postgres"
 }
 
-data_dir = 'app/data'
+# data_dir = 'app/data'
+data_dir = 'app/data2'
 
 if __name__ == '__main__':
     djv = Dejavu(config)
