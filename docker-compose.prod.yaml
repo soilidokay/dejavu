@@ -1,0 +1,28 @@
+services:
+  db:
+    image: postgres:10.7-alpine
+    environment:
+      - POSTGRES_DB=dejavu
+      - POSTGRES_USER=postgres
+      - POSTGRES_PASSWORD=password
+    volumes:
+      - ./data/postgress:/var/lib/postgresql/data
+    ports:
+      - 5432:5432
+    networks:
+      - db_network
+  python:
+    image: nttkimsong/dejavu-query-app:latest
+    volumes:
+      - ./data/dejavu:/data
+      - ./source:/source
+    environment:
+      - DATA_INDEX=/data/index
+      - DATA_RESULT=/data/reusts
+      - SOURCE_INDEX=/source
+    depends_on:
+      - db
+    networks:
+      - db_network
+networks:
+  db_network:

@@ -285,7 +285,11 @@ def recreate_folder(folder_path):
     if os.path.exists(folder_path):
         shutil.rmtree(folder_path)
     os.makedirs(folder_path, exist_ok=True)
-
+    os.chmod(folder_path, 0o777)
+def create_folder(folder_path):
+    if not os.path.exists(folder_path):
+        os.makedirs(folder_path, exist_ok=True)
+        os.chmod(folder_path, 0o777)
 
 def normalize_frequencies(frequencies):
     """

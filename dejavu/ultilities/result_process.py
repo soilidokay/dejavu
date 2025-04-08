@@ -1,6 +1,6 @@
 from typing import List, Tuple, Generator
 
-from Ultilities.helper import extract_audio_segment
+from dejavu.ultilities.helper import extract_audio_segment
 from dejavu.config.settings import ALIGN_TIME, FIELD_FILE_SHA1, FIELD_OFFSETS, FINGERPRINT_TIME, FINGERPRINTED_CONFIDENCE, FINGERPRINTED_HASHES, HASHES_MATCHED, INPUT_CONFIDENCE, INPUT_HASHES, QUERY_TIME, RESULTS, SONG_ID, SONG_NAME, TOTAL_TIME
 
 
