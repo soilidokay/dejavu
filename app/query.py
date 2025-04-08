@@ -14,7 +14,8 @@ config = {
     "database_type": "postgres"
 }
 
-data_dir = 'app/data2'
+# data_dir = 'app/data2'
+data_dir = 'app/data3'
 result_dir = 'app/results'
 
 if __name__ == '__main__':
@@ -22,7 +23,9 @@ if __name__ == '__main__':
 
     # recognize_file = 'app/data/Without My Money.mp3'
     # recognize_file = 'app/query/Without His Friends1.mp3'
-    recognize_file = 'app/query/gsnv.mp3'
+    # recognize_file = 'app/query/gsnv.mp3'
+    # recognize_file = 'app/query/audio1.mp3'
+    recognize_file = 'app/query/2.mp3'
     # recognize_file = 'app/query/Without His Friends.wav'
     # recognize_file = 'mp3/3z2Ovv5OV4U.mp3'
     # recognize_file = 'app/data/Without Your Everythi.wav'

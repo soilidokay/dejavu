@@ -15,7 +15,8 @@ config = {
 }
 
 # data_dir = 'app/data'
-data_dir = 'app/data2'
+# data_dir = 'app/data2'
+data_dir = 'app/data3'
 
 if __name__ == '__main__':
     djv = Dejavu(config)

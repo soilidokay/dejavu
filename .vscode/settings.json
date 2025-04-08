@@ -1,0 +1,24 @@
+{
+    "sqltools.connections": [
+        {
+            "previewLimit": 50,
+            "server": "192.168.1.62",
+            "port": 5432,
+            "askForPassword": true,
+            "driver": "PostgreSQL",
+            "name": "posgres",
+            "database": "postgres",
+            "username": "postgres"
+        },
+        {
+            "previewLimit": 50,
+            "server": "host.docker.internal",
+            "port": 5432,
+            "askForPassword": true,
+            "driver": "PostgreSQL",
+            "name": "n8n-db",
+            "database": "postgres",
+            "username": "postgres"
+        }
+    ]
+}
