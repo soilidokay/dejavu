@@ -1,4 +1,5 @@
 import os
+import re
 import shutil
 import librosa
 import numpy as np
@@ -354,3 +355,12 @@ def normalize_frequencies_ampli(frequencies):
 
     normalized_frequencies = [2 * (f - f_min) / (f_max - f_min) - 1 for f in frequencies]
     return normalized_frequencies
+def parse_pg_array_of_tuples(pg_array_str: str):
+    # Bỏ dấu { } bên ngoài
+    pg_array_str = pg_array_str.strip('{}')
+    
+    # Tách từng cặp "(a,b)"
+    items = re.findall(r'\((\d+),(\d+)\)', pg_array_str)
+    
+    # Chuyển thành tuple int
+    return [(int(a), int(b)) for a, b in items]

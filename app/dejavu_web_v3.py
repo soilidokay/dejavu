@@ -1,14 +1,14 @@
 import sys
 sys.path.append('.')
-from concurrent.futures import ProcessPoolExecutor
-import math
-import psycopg2
-import shutil
-import tempfile
-import gradio as gr
-import os
-from app import app_query
 from dejavu import Dejavu
+from app import app_query
+import os
+import gradio as gr
+import tempfile
+import shutil
+import psycopg2
+import math
+from concurrent.futures import ProcessPoolExecutor
 
 
 config = {
@@ -244,7 +244,7 @@ def display_matched_segments2_1(matches, result_dir, data_dir, recognize_file):
 
                     html_segments += f"""
 <div class="custom-audio-wrapper" style="margin: 20px;">
-    <strong>🎯 Đoạn {idex_s}.{idex}.{idx2} ({label}):</strong><br>
+    <strong>🎯 Đoạn {idex_s}.{idex}.{idx2} ({label}): {round( song.end_time-song.start_time,2)}s</strong><br>
     <span>🕒 {song.start_time}s → {song.end_time}s</span><br>
 
     <!-- Nút phát -->

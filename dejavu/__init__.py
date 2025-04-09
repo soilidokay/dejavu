@@ -14,6 +14,7 @@ from typing import Dict, List, Tuple
 import numpy as np
 import tqdm
 
+from dejavu.base_classes.common_database import CommonDatabase
 from dejavu.ultilities import helper
 import dejavu.logic.decoder as decoder
 from dejavu.base_classes.base_database import get_database
@@ -42,7 +43,7 @@ class Dejavu:
         # initialize db
         db_cls = get_database(config.get("database_type", "mysql").lower())
 
-        self.db = db_cls(**config.get("database", {}))
+        self.db: CommonDatabase = db_cls(**config.get("database", {}))
         self.db.setup()
 
         # if we should limit seconds fingerprinted,
@@ -164,7 +165,7 @@ class Dejavu:
             nprocesses = 1
         else:
             nprocesses = max(1, nprocesses)
-            
+
         # Collect files to fingerprint
         filenames_to_fingerprint = []
         for filename, _ in decoder.find_files(path, extensions):
@@ -177,7 +178,8 @@ class Dejavu:
             print("✅ No new files to fingerprint.")
             return
         # Prepare input for workers
-        worker_input = list(zip(filenames_to_fingerprint, [self.limit] * len(filenames_to_fingerprint), [self.config] *  len(filenames_to_fingerprint)))
+        worker_input = list(zip(filenames_to_fingerprint, [self.limit] *
+                            len(filenames_to_fingerprint), [self.config] * len(filenames_to_fingerprint)))
 
         print(f"🔍 Starting fingerprinting of {len(worker_input)} file(s) with {nprocesses} process(es)...")
 
@@ -254,6 +256,7 @@ class Dejavu:
         """
         t = time()
         matches, dedup_hashes = self.db.return_matches_attach_offset(hashes)
+
         query_time = time() - t
 
         return matches, dedup_hashes, query_time
@@ -315,7 +318,7 @@ class Dejavu:
                 0               1
             count   array_offsets
         """
-        offsets_o = map(lambda x: x[2:], songs_match)
+        offsets_o = map(lambda x: x[2:], list(songs_match))
         for offsets in offsets_o:
             times = [(self.to_timetamp(o[0]), self.to_timetamp(o[1])) for o in offsets[1]]
             temps = helper.create_subarrays(times, throld_find, lambda x: x[0])
@@ -340,7 +343,7 @@ class Dejavu:
             yield offsets[0], temps_seg2
 
     def align_matches_attach_offset_v1(self, matches: List[Tuple[int, int]], dedup_hashes: Dict[str, int], queried_hashes: int,
-                                    topn: int = TOPN, topq: int = TOPQ, throld_find: int = THROLD_CONTINUOUS_ARRAY, min_second=QUERY_MIN_SECOND) -> List[Dict[str, any]]:
+                                       topn: int = TOPN, topq: int = TOPQ, throld_find: int = THROLD_CONTINUOUS_ARRAY, min_second=QUERY_MIN_SECOND) -> List[Dict[str, any]]:
         """
         Finds hash matches that align in time with other matches and finds
         consensus about which hashes are "true" signal from the audio.
@@ -421,10 +424,10 @@ class Dejavu:
             songs_result.append(song)
 
         return songs_result
-    
+
     def align_matches_attach_offset_v2(self, matches: List[Tuple[int, int]], dedup_hashes: Dict[str, int], queried_hashes: int,
-                                topn: int = TOPN, topq: int = TOPQ, throld_find: int = THROLD_CONTINUOUS_ARRAY, 
-                                min_second=QUERY_MIN_SECOND) -> List[Dict[str, any]]:
+                                       topn: int = TOPN, topq: int = TOPQ, throld_find: int = THROLD_CONTINUOUS_ARRAY,
+                                       min_second=QUERY_MIN_SECOND) -> List[Dict[str, any]]:
         """
         Finds hash matches that align in time with other matches and finds consensus about which hashes are "true" signal from the audio.
         """
@@ -477,9 +480,9 @@ class Dejavu:
             })
 
         return songs_result
-    
+
     def align_matches_attach_offset(self, matches: List[Tuple[int, int]], dedup_hashes: Dict[str, int], queried_hashes: int,
-                                    topn: int = TOPN, topq: int = TOPQ, throld_find: int = THROLD_CONTINUOUS_ARRAY, 
+                                    topn: int = TOPN, topq: int = TOPQ, throld_find: int = THROLD_CONTINUOUS_ARRAY,
                                     min_second=QUERY_MIN_SECOND) -> List[Dict[str, any]]:
         """
         Finds hash matches that align in time with other matches and finds consensus about which hashes are "true" signal 
@@ -540,8 +543,53 @@ class Dejavu:
             songs_result = [r for r in results if r is not None]
 
         return songs_result
-    
-    
+
+    def align_matches_attach_offset_with_db(self, hashes: List[Tuple[str, int]],
+                                            topn: int = TOPN, topq: int = TOPQ, throld_find: int = THROLD_CONTINUOUS_ARRAY,
+                                            min_second=QUERY_MIN_SECOND) -> List[Dict[str, any]]:
+
+        songs_result = []
+        counts = self.db.return_matches_attach_offset_and_filter(hashes, topn, topq)
+        
+        songs_matches = sorted(
+            [list(sorted(list(group), key=lambda g: g[2], reverse=True))[:topq]
+             for key, group in groupby(counts, key=lambda count: count[0])],  # group by song_id
+            key=lambda count: count[0][2], reverse=True
+        )
+
+        for songs_match in songs_matches:  # consider topn elements in the result
+
+            offsets = list(self.get_songs_offset(songs_match, throld_find, min_second))
+
+            if len(offsets) < 1:
+                continue
+
+            song_id = songs_match[0][0]
+
+            song = self.db.get_song_by_id(song_id)
+
+            song_name = song.get(SONG_NAME, None)
+            song_hashes = song.get(FIELD_TOTAL_HASHES, None)
+            # hashes_matched = dedup_hashes[song_id]
+
+            song = {
+                SONG_ID: song_id,
+                SONG_NAME: song_name.encode("utf8"),
+                INPUT_HASHES: -1,  # queried_hashes,
+                FINGERPRINTED_HASHES: song_hashes,
+                HASHES_MATCHED: None,  # hashes_matched,
+                # Percentage regarding hashes matched vs hashes from the input.
+                INPUT_CONFIDENCE: -1,  # round(hashes_matched / queried_hashes, 2),
+                # Percentage regarding hashes matched vs hashes fingerprinted in the db.
+                FINGERPRINTED_CONFIDENCE: -1,  # round(hashes_matched / song_hashes, 2),
+                FIELD_FILE_SHA1: song.get(FIELD_FILE_SHA1, None).encode("utf8"),
+                FIELD_OFFSETS: offsets
+            }
+
+            songs_result.append(song)
+
+        return songs_result
+
     def recognize(self, recognizer, *options, **kwoptions) -> Dict[str, any]:
         r = recognizer(self)
         return r.recognize(*options, **kwoptions)

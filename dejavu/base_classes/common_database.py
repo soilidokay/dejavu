@@ -1,7 +1,10 @@
 import abc
+import io
+import struct
 from typing import Dict, List, Tuple
 
 from dejavu.base_classes.base_database import BaseDatabase
+from dejavu.ultilities.helper import parse_pg_array_of_tuples
 
 
 class CommonDatabase(BaseDatabase, metaclass=abc.ABCMeta):
@@ -216,8 +219,9 @@ class CommonDatabase(BaseDatabase, metaclass=abc.ABCMeta):
                         results.append((sid, offset - song_sampled_offset))
 
             return results, dedup_hashes
+
     def return_matches_attach_offset(self, hashes: List[Tuple[str, int]],
-                       batch_size: int = 1000) -> Tuple[List[Tuple[int, int]], Dict[int, int]]:
+                                     batch_size: int = 1000) -> Tuple[List[Tuple[int, int]], Dict[int, int]]:
         """
         Searches the database for pairs of (hash, offset) values.
 
@@ -250,6 +254,17 @@ class CommonDatabase(BaseDatabase, metaclass=abc.ABCMeta):
                 # Create our IN part of the query
                 query = self.SELECT_MULTIPLE % ', '.join([self.IN_MATCH] * len(values[index: index + batch_size]))
 
+                # from psycopg2.extensions import adapt
+
+                # def quote(val):
+                #     return adapt(val).getquoted().decode()
+
+                # formatted_query = query
+                # for val in values[index: index + batch_size]:
+                #     formatted_query = formatted_query.replace('%s', quote(val), 1)
+
+                # print(formatted_query)
+
                 cur.execute(query, values[index: index + batch_size])
 
                 for hsh, sid, offset in cur:
@@ -259,9 +274,109 @@ class CommonDatabase(BaseDatabase, metaclass=abc.ABCMeta):
                         dedup_hashes[sid] += 1
                     #  we now evaluate all offset for each  hash matched
                     for song_sampled_offset in mapper[hsh]:
-                        results.append((sid, offset - song_sampled_offset,offset,song_sampled_offset))
+                        results.append((sid, offset - song_sampled_offset, offset, song_sampled_offset))
 
             return results, dedup_hashes
+
+    def return_matches_attach_offset_and_filter(self, hashes: List[Tuple[str, int]],
+                                                topn: int = 5, topq: int = 5) -> Tuple[List[Tuple[int, int]], Dict[int, int]]:
+        """
+        Searches the database for pairs of (hash, offset) values.
+
+        :param hashes: A sequence of tuples in the format (hash, offset)
+            - hash: Part of a sha1 hash, in hexadecimal format
+            - offset: Offset this hash was created from/at.
+        :param batch_size: number of query's batches.
+        :return: a list of (sid, offset_difference) tuples and a
+        dictionary with the amount of hashes matched (not considering
+        duplicated hashes) in each song.
+            - song id: Song identifier
+            - offset_difference: (database_offset - sampled_offset)
+        """
+        # Create a dictionary of hash => offset pairs for later lookups
+        results = []
+        with self.cursor() as cur:
+            cur.execute("DROP TABLE IF EXISTS tmp_query_hashes;")
+            cur.execute("""
+                CREATE TEMP TABLE tmp_query_hashes (
+                    hash BYTEA,
+                    query_offset INTEGER
+                ) ON COMMIT DROP;
+            """)
+            # cur.execute("CREATE INDEX idx_tmp_hash ON tmp_query_hashes(hash);")
+            # Sử dụng binary format theo PostgreSQL COPY BINARY spec
+            buf = io.BytesIO()
+
+            # Ghi header của PostgreSQL COPY BINARY
+            buf.write(b'PGCOPY\n\xff\r\n\0')       # Signature
+            buf.write(struct.pack('!ii', 0, 0))    # Flags + Header extension area
+
+            for hex_hash, offset in hashes:
+                bin_hash = bytes.fromhex(hex_hash)
+                buf.write(struct.pack('!h', 2))  # number of columns: 2
+
+                # Column 1: hash BYTEA
+                buf.write(struct.pack('!i', len(bin_hash)))
+                buf.write(bin_hash)
+
+                # Column 2: query_offset INTEGER
+                buf.write(struct.pack('!i', 4))
+                buf.write(struct.pack('!i', offset))
+
+            # Ghi trailer của COPY BINARY
+            buf.write(struct.pack('!h', -1))  # end-of-copy marker
+            buf.seek(0)
+
+            cur.copy_expert("COPY tmp_query_hashes(hash, query_offset) FROM STDIN WITH (FORMAT binary)", buf)
+
+            # cur.execute(f"""
+            #     WITH matched AS (
+            #         SELECT
+            #             f.song_id,
+            #             f.offset - q.query_offset AS delta_offset,
+            #             COUNT(*) AS match_count,
+            #             ARRAY_AGG(DISTINCT ROW(f.offset, q.query_offset) ORDER BY ROW(f.offset, q.query_offset)) AS offsets
+            #         FROM fingerprints f
+            #         JOIN tmp_query_hashes q ON f.hash = q.hash
+            #         GROUP BY f.song_id, delta_offset
+            #     ),
+            #     ranked AS (
+            #         SELECT *,
+            #             ROW_NUMBER() OVER (PARTITION BY song_id ORDER BY match_count DESC) AS rn
+            #         FROM matched
+            #     )
+            #     SELECT * FROM ranked
+            #     WHERE rn <= {topq}
+            #     ORDER BY match_count DESC
+            #     LIMIT {topn};
+            # """)
+            cur.execute(f"""
+                SELECT * FROM (
+                SELECT *,
+                    ROW_NUMBER() OVER (PARTITION BY song_id ORDER BY match_count DESC) AS rn
+                FROM (
+                    SELECT
+                        f.song_id,
+                        f.offset - q.query_offset AS delta_offset,
+                        COUNT(*) AS match_count,
+                        ARRAY_AGG(DISTINCT ROW(f.offset, q.query_offset) ORDER BY ROW(f.offset, q.query_offset)) AS offsets
+                    FROM fingerprints f
+                    JOIN tmp_query_hashes q ON f.hash = q.hash
+                    GROUP BY f.song_id, delta_offset
+                ) matched
+            ) ranked
+            WHERE rn <= {topq}
+            ORDER BY match_count DESC
+            LIMIT {topn}
+            """)
+
+            results = cur.fetchall()
+            total_resulks = []
+            for row in results:
+                total_resulks.append((row[0], row[1], row[2], parse_pg_array_of_tuples(row[3])))
+
+            return total_resulks
+
     def delete_songs_by_id(self, song_ids: List[int], batch_size: int = 1000) -> None:
         """
         Given a list of song ids it deletes all songs specified and their corresponding fingerprints.

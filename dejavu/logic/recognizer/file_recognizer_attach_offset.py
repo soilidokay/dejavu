@@ -37,11 +37,26 @@ class FileRecognizerAttchOffset(BaseRecognizer):
 
         return final_results, np.sum(fingerprint_times), query_time, align_time
 
+    def _recognize3(self, *data,) -> Tuple[List[Dict[str, any]], int, int, int]:
+        fingerprint_times = []
+        hashes = set()  # to remove possible duplicated fingerprints we built a set.
+        for channel in data:
+            fingerprints, fingerprint_time = self._dejavu.generate_fingerprints(channel, Fs=self.Fs)
+            fingerprint_times.append(fingerprint_time)
+            hashes |= set(fingerprints)
+
+        t = time()
+        final_results = self._dejavu.align_matches_attach_offset_with_db(
+            hashes, topn=self.top_n, topq=self.top_seg, throld_find=self.throld_find, min_second=self.min_second)
+        align_time = time() - t
+
+        return final_results, np.sum(fingerprint_times), -1, align_time
+
     def recognize_file(self, filename: str) -> Dict[str, any]:
         channels, self.Fs, _ = decoder.read(filename, self._dejavu.limit)
 
         t = time()
-        matches, fingerprint_time, query_time, align_time = self._recognize2(*channels)
+        matches, fingerprint_time, query_time, align_time = self._recognize3(*channels)
         t = time() - t
 
         results = {
