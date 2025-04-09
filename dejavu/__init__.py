@@ -1,4 +1,9 @@
+from collections import defaultdict
+from concurrent.futures import ProcessPoolExecutor, ThreadPoolExecutor, as_completed
+from functools import lru_cache
+import json
 import multiprocessing
+from operator import itemgetter
 import os
 import sys
 import traceback
@@ -7,6 +12,7 @@ from time import time
 from typing import Dict, List, Tuple
 
 import numpy as np
+import tqdm
 
 from dejavu.ultilities import helper
 import dejavu.logic.decoder as decoder
@@ -19,6 +25,14 @@ from dejavu.config.settings import (DEFAULT_FS, DEFAULT_OVERLAP_RATIO,
                                     INPUT_CONFIDENCE, INPUT_HASHES, OFFSET,
                                     OFFSET_SECS, QUERY_MIN_SECOND, SONG_ID, SONG_NAME, THROLD_CONTINUOUS_ARRAY, TOPN, TOPQ)
 from dejavu.logic.fingerprint import fingerprint
+
+
+def get_intsance_db(config):
+    """
+    Returns the database instance.
+    """
+    db_cls = get_database(config.get("database_type", "mysql").lower())
+    return db_cls(**config.get("database", {}))
 
 
 class Dejavu:
@@ -37,6 +51,13 @@ class Dejavu:
         if self.limit == -1:  # for JSON compatibility
             self.limit = None
         self.__load_fingerprinted_audio_hashes()
+
+    def get_intsance_db(self):
+        """
+        Returns the database instance.
+        """
+        db_cls = get_database(self.config.get("database_type", "mysql").lower())
+        return db_cls(**self.config.get("database", {}))
 
     def __load_fingerprinted_audio_hashes(self) -> None:
         """
@@ -120,6 +141,53 @@ class Dejavu:
 
         pool.close()
         pool.join()
+
+    @staticmethod
+    def worker_input_generator(args):
+        config = args[2]
+        db = get_intsance_db(config)
+        song_name, hashes, file_hash, extension = Dejavu._fingerprint_worker(args[:2])
+        sid = db.insert_song(song_name + extension, file_hash, len(hashes))
+        db.insert_hashes(sid, hashes)
+        db.set_song_fingerprinted(sid)
+        print(f"✅ Finished fingerprinting {song_name}")
+
+    def fingerprint_directory2(self, path: str, extensions: str, nprocesses: int = None) -> None:
+        """
+        Fingerprints all files in a directory with specified extensions, using parallel processing.
+        """
+
+        # Determine number of processes
+        try:
+            nprocesses = nprocesses or multiprocessing.cpu_count()
+        except NotImplementedError:
+            nprocesses = 1
+        else:
+            nprocesses = max(1, nprocesses)
+            
+        # Collect files to fingerprint
+        filenames_to_fingerprint = []
+        for filename, _ in decoder.find_files(path, extensions):
+            if decoder.unique_hash(filename) in self.songhashes_set:
+                print(f"{filename} already fingerprinted, skipping.")
+                continue
+            filenames_to_fingerprint.append(filename)
+
+        if not filenames_to_fingerprint:
+            print("✅ No new files to fingerprint.")
+            return
+        # Prepare input for workers
+        worker_input = list(zip(filenames_to_fingerprint, [self.limit] * len(filenames_to_fingerprint), [self.config] *  len(filenames_to_fingerprint)))
+
+        print(f"🔍 Starting fingerprinting of {len(worker_input)} file(s) with {nprocesses} process(es)...")
+
+        with ProcessPoolExecutor(max_workers=nprocesses) as executor:
+
+            # executor.map(worker_input_generator, worker_input)
+            list(executor.map(Dejavu.worker_input_generator, worker_input))
+            self.__load_fingerprinted_audio_hashes()
+
+        print("✅ Done fingerprinting.")
 
     def fingerprint_file(self, file_path: str, song_name: str = None) -> None:
         """
@@ -271,7 +339,7 @@ class Dejavu:
                 continue
             yield offsets[0], temps_seg2
 
-    def align_matches_attach_offset(self, matches: List[Tuple[int, int]], dedup_hashes: Dict[str, int], queried_hashes: int,
+    def align_matches_attach_offset_v1(self, matches: List[Tuple[int, int]], dedup_hashes: Dict[str, int], queried_hashes: int,
                                     topn: int = TOPN, topq: int = TOPQ, throld_find: int = THROLD_CONTINUOUS_ARRAY, min_second=QUERY_MIN_SECOND) -> List[Dict[str, any]]:
         """
         Finds hash matches that align in time with other matches and finds
@@ -353,7 +421,127 @@ class Dejavu:
             songs_result.append(song)
 
         return songs_result
+    
+    def align_matches_attach_offset_v2(self, matches: List[Tuple[int, int]], dedup_hashes: Dict[str, int], queried_hashes: int,
+                                topn: int = TOPN, topq: int = TOPQ, throld_find: int = THROLD_CONTINUOUS_ARRAY, 
+                                min_second=QUERY_MIN_SECOND) -> List[Dict[str, any]]:
+        """
+        Finds hash matches that align in time with other matches and finds consensus about which hashes are "true" signal from the audio.
+        """
+        # Sort matches once by (song_id, delta_offset) for efficient grouping
+        sorted_matches = sorted(matches, key=lambda m: (m[0], m[1]))
 
+        # Efficiently count offsets per (song_id, delta_offset) group
+        counts = []
+        for key, group in groupby(sorted_matches, key=lambda m: (m[0], m[1])):
+            group_list = list(group)
+            offset_group = sorted((g[2:] for g in group_list), key=itemgetter(0))  # Sort offsets once per group
+            unique_offsets = [(k[0], k[1]) for k, g in groupby(offset_group, key=itemgetter(0, 1))]
+            counts.append((key[0], key[1], len(group_list), unique_offsets))
+
+        # Group by song_id and sort by count (descending), taking topq per song
+        songs_matches = []
+        for song_id, song_group in groupby(counts, key=itemgetter(0)):
+            group = sorted(song_group, key=itemgetter(2), reverse=True)[:topq]  # Topq per song
+            songs_matches.append(group)
+        songs_matches.sort(key=lambda x: x[0][2], reverse=True)  # Sort by highest count
+
+        # Process topn songs and build results
+        songs_result = []
+        for songs_match in songs_matches[:topn]:
+            offsets = list(self.get_songs_offset(songs_match, throld_find, min_second))
+            if not offsets:
+                continue
+
+            song_id = songs_match[0][0]
+            song = self.db.get_song_by_id(song_id)
+
+            song_name = song.get(SONG_NAME, None)
+            song_hashes = song.get(FIELD_TOTAL_HASHES, None)
+            hashes_matched = dedup_hashes[song_id]
+
+            # Precompute confidence values
+            input_conf = round(hashes_matched / queried_hashes, 2)
+            fingerprint_conf = round(hashes_matched / song_hashes, 2)
+
+            songs_result.append({
+                SONG_ID: song_id,
+                SONG_NAME: song_name.encode("utf8"),
+                INPUT_HASHES: queried_hashes,
+                FINGERPRINTED_HASHES: song_hashes,
+                HASHES_MATCHED: hashes_matched,
+                INPUT_CONFIDENCE: input_conf,
+                FINGERPRINTED_CONFIDENCE: fingerprint_conf,
+                FIELD_FILE_SHA1: song.get(FIELD_FILE_SHA1, None).encode("utf8"),
+                FIELD_OFFSETS: offsets
+            })
+
+        return songs_result
+    
+    def align_matches_attach_offset(self, matches: List[Tuple[int, int]], dedup_hashes: Dict[str, int], queried_hashes: int,
+                                    topn: int = TOPN, topq: int = TOPQ, throld_find: int = THROLD_CONTINUOUS_ARRAY, 
+                                    min_second=QUERY_MIN_SECOND) -> List[Dict[str, any]]:
+        """
+        Finds hash matches that align in time with other matches and finds consensus about which hashes are "true" signal 
+        from the audio, using threading for parallel processing of songs without caching.
+        """
+        # Sort matches once by (song_id, delta_offset) for efficient grouping
+        sorted_matches = sorted(matches, key=lambda m: (m[0], m[1]))
+
+        # Efficiently count offsets per (song_id, delta_offset) group
+        counts = []
+        for key, group in groupby(sorted_matches, key=lambda m: (m[0], m[1])):
+            group_list = list(group)
+            offset_group = sorted((g[2:] for g in group_list), key=itemgetter(0))  # Sort offsets once per group
+            unique_offsets = [(k[0], k[1]) for k, g in groupby(offset_group, key=itemgetter(0, 1))]
+            counts.append((key[0], key[1], len(group_list), unique_offsets))
+
+        # Group by song_id and sort by count (descending), taking topq per song
+        songs_matches = []
+        for song_id, song_group in groupby(counts, key=itemgetter(0)):
+            group = sorted(song_group, key=itemgetter(2), reverse=True)[:topq]  # Topq per song
+            songs_matches.append(group)
+        songs_matches.sort(key=lambda x: x[0][2], reverse=True)  # Sort by highest count
+
+        # Function to process a single song_match in a thread
+        def process_song_match(songs_match):
+            offsets = list(self.get_songs_offset(songs_match, throld_find, min_second))
+            if not offsets:
+                return None
+
+            song_id = songs_match[0][0]
+            song = self.db.get_song_by_id(song_id)  # No caching here
+
+            song_name = song.get(SONG_NAME, None)
+            song_hashes = song.get(FIELD_TOTAL_HASHES, None)
+            hashes_matched = dedup_hashes[song_id]
+
+            input_conf = round(hashes_matched / queried_hashes, 2)
+            fingerprint_conf = round(hashes_matched / song_hashes, 2)
+
+            return {
+                SONG_ID: song_id,
+                SONG_NAME: song_name.encode("utf8"),
+                INPUT_HASHES: queried_hashes,
+                FINGERPRINTED_HASHES: song_hashes,
+                HASHES_MATCHED: hashes_matched,
+                INPUT_CONFIDENCE: input_conf,
+                FINGERPRINTED_CONFIDENCE: fingerprint_conf,
+                FIELD_FILE_SHA1: song.get(FIELD_FILE_SHA1, None).encode("utf8"),
+                FIELD_OFFSETS: offsets
+            }
+
+        # Process topn songs in parallel using ThreadPoolExecutor
+        songs_result = []
+        with ThreadPoolExecutor(max_workers=min(topn, 4)) as executor:  # Adjust max_workers as needed
+            # Map process_song_match to each songs_match in parallel
+            results = executor.map(process_song_match, songs_matches[:topn])
+            # Filter out None results (from songs with no valid offsets)
+            songs_result = [r for r in results if r is not None]
+
+        return songs_result
+    
+    
     def recognize(self, recognizer, *options, **kwoptions) -> Dict[str, any]:
         r = recognizer(self)
         return r.recognize(*options, **kwoptions)

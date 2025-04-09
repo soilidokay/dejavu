@@ -1,5 +1,6 @@
 import sys
 sys.path.append('.')
+from concurrent.futures import ProcessPoolExecutor
 import math
 import psycopg2
 import shutil
@@ -19,6 +20,16 @@ config = {
     },
     "database_type": "postgres"
 }
+
+# config = {
+#     "database": {
+#         "host": "172.16.1.65",
+#         "user": "postgres",
+#         "password": "password",
+#         "database": "dejavu"
+#     },
+#     "database_type": "postgres"
+# }
 source_dir = app_query.data_source_index_dir  # hoặc nơi bạn lưu nhiều thư mục chứa nhạc
 
 # Khởi tạo Dejavu
@@ -107,7 +118,7 @@ def get_paged_songs(page, keyword):
     songs_page = all_songs["songs"]
     total_pages = all_songs["total_pages"]
     page = page if page <= total_pages else total_pages + 1
-    
+
     if isinstance(songs_page, str):
         return songs_page, 1, ""
 
@@ -145,8 +156,7 @@ def index_folder_gradio(folder_name):
             return "⚠️ Có file trùng tên, không index.", common_list
 
         # Index
-        djv.fingerprint_directory(folder_path, [".mp3", ".wav"], 10)
-
+        djv.fingerprint_directory2(folder_path, [".mp3", ".wav"], 10)
         # Copy file
         for file_name in os.listdir(folder_path):
             if file_name.endswith((".mp3", ".wav")):
@@ -211,6 +221,114 @@ def run_and_display_segments(file):
         return [gr.Markdown("⚠️ Không tìm thấy đoạn nào trùng khớp.")]
 
 
+def display_matched_segments2_1(matches, result_dir, data_dir, recognize_file):
+    html_segments = ""
+
+    for idex_s, value in enumerate(matches):
+        song_name = value.song_name.decode('utf-8')
+        song_path = os.path.join(data_dir, song_name)
+        song_path = os.path.abspath(os.path.join(data_dir, song_name))
+        recognize_file = os.path.abspath(recognize_file)
+        songs = [song_path, recognize_file]
+        for song_q in value.offsets:
+            for idex, song_seg in enumerate(song_q):
+                html_segments += f"<strong>🎶 Bài hát: {song_name}</strong><br>"
+                html_segments += "<div style='display: flex; flex-direction: row; margin-bottom: 20px;'>"
+                for idx2, song in enumerate(song_seg.all()):
+                    file_url = f"/file={songs[idx2]}"
+                    label = "Bản gốc" if idx2 == 0 else "Query"
+                    audio_id = f"audio_{idex_s}_{idex}_{idx2}"
+                    start_time = song.start_time
+                    end_time = song.end_time
+                    file_url = f"/file={song_path if idx2 == 0 else recognize_file}"
+
+                    html_segments += f"""
+<div class="custom-audio-wrapper" style="margin: 20px;">
+    <strong>🎯 Đoạn {idex_s}.{idex}.{idx2} ({label}):</strong><br>
+    <span>🕒 {song.start_time}s → {song.end_time}s</span><br>
+
+    <!-- Nút phát -->
+    <button class="play-button" 
+            data-file="{file_url}" 
+            data-start="{song.start_time}" 
+            data-end="{song.end_time}" 
+            data-id="prog_{idex_s}_{idex}_{idx2}">
+        ▶️ Phát
+    </button>
+
+    <!-- Thanh tiến trình -->
+    <div class="progress-container" 
+         data-id="prog_{idex_s}_{idex}_{idx2}" 
+         style="width:300px;height:10px;background:#ccc;margin-top:5px;cursor:pointer;">
+        <div class="progress" 
+             style="width:0%;height:100%;background:green;"></div>
+    </div>
+</div>
+"""
+
+                html_segments += "</div>"
+
+    scroll_box = f"""
+    <div style="max-height: 500px; overflow-y: scroll; border: 1px solid #ccc; padding: 10px;">
+        {html_segments}
+    </div>
+    """
+    return gr.HTML(scroll_box)
+
+
+def display_matched_segments2(matches, result_dir, data_dir, recognize_file):
+    html_segments = ""
+
+    for idex_s, value in enumerate(matches):
+        song_name = value.song_name.decode('utf-8')
+        song_path = os.path.join(data_dir, song_name)
+        songs = [song_path, recognize_file]
+
+        for song_q in value.offsets:
+            for idex, song_seg in enumerate(song_q):
+                html_segments += f"<strong>🎶 Bài hát: {song_name}</strong><br>"
+                html_segments += "<div style='display: flex; flex-direction: row; margin-bottom: 20px;'>"
+                for idx2, song in enumerate(song_seg.all()):
+                    file_out = os.path.join(
+                        result_dir,
+                        f"s{idex_s}_c{song_seg.count}_{song_name}_seg{idex}_{idx2}_{song.start_time}_{song.end_time}.mp3"
+                    )
+                    if os.path.exists(file_out):
+                        label = "Bản gốc" if idx2 == 0 else "Query"
+                        html_segments += f"""
+                        <div style="margin-bottom: 20px;">
+                            <strong>🎯 Đoạn {idex_s}.{idex}.{idx2} ({label}):</strong><br>
+                            <span>🕒 {song.start_time}s → {song.end_time}s</span><br>
+                            <audio controls src="/file={file_out}"></audio>
+                        </div>
+                        """
+                    else:
+                        html_segments += f"""
+                        <div style="margin-bottom: 20px;">
+                            <strong>❌ Không tìm thấy file:</strong><br>
+                            <span>🕒 {song.start_time}s → {song.end_time}s</span><br>
+                        </div>
+                        """
+                html_segments += "</div>"
+
+    # Thêm scroll box
+    scroll_box = f"""
+    <div style="max-height: 500px; overflow-y: scroll; border: 1px solid #ccc; padding: 10px;">
+        {html_segments}
+    </div>
+    """
+    return gr.HTML(scroll_box)
+
+
+def run_and_display_segments2(file):
+    is_match, results, matches = app_query. match_and_save_segments2(djv, file, app_query.data_dir, app_query.result_dir)
+    return display_matched_segments2_1(results.matches, app_query.result_dir, app_query. data_dir, file)
+    # if is_match:
+    #     return display_matched_segments2(matches, app_query.result_dir, app_query. data_dir, file)
+    # else:
+    #     return [gr.Markdown("⚠️ Không tìm thấy đoạn nào trùng khớp.")]
+
+
 def update_folder_choices():
     folders = list_folders(source_dir)
     return gr.update(choices=folders)
@@ -246,8 +364,20 @@ def delete_and_update(song_name):
     return result, gr.update(choices=updated_songs)
 
 
+def load_js():
+    with open("/code/app/js/segment-player.js", "r") as js_file:
+        return f"""
+            <script>
+                {js_file.read()}
+        </script>
+    """
+
+
+head = f"""
+    {load_js()}
+"""
 # ---------- Giao diện Gradio ----------
-with gr.Blocks(title="Dejavu Audio Fingerprint 🎼") as app:
+with gr.Blocks(title="Dejavu Audio Fingerprint 🎼", head=head) as app:
 
     gr.Markdown("## 🎵 Dejavu Audio Fingerprint App")
 
@@ -308,9 +438,9 @@ with gr.Blocks(title="Dejavu Audio Fingerprint 🎼") as app:
             query_input = gr.Audio(label="🎧 File truy vấn", type="filepath")
             match_btn = gr.Button("▶️ Tìm đoạn khớp")
             segment_output = gr.HTML()
-            match_btn.click(fn=run_and_display_segments, inputs=query_input, outputs=segment_output)
+            match_btn.click(fn=run_and_display_segments2, inputs=query_input, outputs=segment_output)
 
 # Chạy ứng dụng
 if __name__ == "__main__":
-    gr.set_static_paths(paths=[app_query.result_dir])
+    gr.set_static_paths(paths=[app_query.result_dir, app_query.data_dir])
     app.launch(server_name="0.0.0.0")

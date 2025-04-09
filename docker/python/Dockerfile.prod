@@ -15,4 +15,4 @@ COPY dejavu ./dejavu
 COPY app ./app
 
 
-CMD [ "python","/code/app/dejavu_web.py" ]
+CMD [ "python","/code/app/dejavu_web_v3.py" ]
