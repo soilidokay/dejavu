@@ -1,13 +1,14 @@
-import os
-import gradio as gr
-import tempfile
-import shutil
-import psycopg2
-import math
 import sys
 sys.path.append('.')
+import math
+import psycopg2
+import shutil
+import tempfile
+import gradio as gr
+import os
 from app import app_query
 from dejavu import Dejavu
+
 
 config = {
     "database": {
@@ -44,28 +45,84 @@ def fetch_songs(keyword=""):
     except Exception as e:
         return f"❌ Lỗi database: {e}"
 
+
+def fetch_songs2(keyword="", page=1, size=25):
+    try:
+        conn = psycopg2.connect(**config['database'])
+        cur = conn.cursor()
+
+        offset = (page - 1) * size
+
+        # Đếm tổng số bài hát phù hợp
+        if keyword:
+            cur.execute("""
+                SELECT COUNT(*) FROM songs 
+                WHERE song_name ILIKE %s
+            """, (f"%{keyword}%",))
+        else:
+            cur.execute("SELECT COUNT(*) FROM songs")
+
+        total = cur.fetchone()[0]
+        total_pages = math.ceil(total / size)
+
+        # Truy vấn dữ liệu theo trang
+        if keyword:
+            cur.execute("""
+                SELECT song_name FROM songs 
+                WHERE song_name ILIKE %s 
+                ORDER BY song_name 
+                LIMIT %s OFFSET %s
+            """, (f"%{keyword}%", size, offset))
+        else:
+            cur.execute("""
+                SELECT song_name FROM songs 
+                ORDER BY song_name 
+                LIMIT %s OFFSET %s
+            """, (size, offset))
+
+        songs = [row[0] for row in cur.fetchall()]
+        cur.close()
+        conn.close()
+
+        return {
+            "songs": songs,
+            "total_pages": total_pages,
+            "current_page": page
+        }
+
+    except Exception as e:
+        return {
+            "error": f"❌ Lỗi database: {e}"
+        }
+        return f"❌ Lỗi database: {e}"
 # ---------- Tải trang hiện tại ----------
 
 
 def get_paged_songs(page, keyword):
-    all_songs = fetch_songs(keyword)
-    if isinstance(all_songs, str):
-        return all_songs, 1, ""
+    page = page if page > 0 else 1
+    # all_songs = fetch_songs(keyword)
+    # if isinstance(all_songs, str):
+    #     return all_songs, 1, ""
+    all_songs = fetch_songs2(keyword, page, PAGE_SIZE)
+    songs_page = all_songs["songs"]
+    total_pages = all_songs["total_pages"]
+    page = page if page <= total_pages else total_pages + 1
+    
+    if isinstance(songs_page, str):
+        return songs_page, 1, ""
 
-    total_pages = max(1, math.ceil(len(all_songs) / PAGE_SIZE))
-    page = max(1, min(page, total_pages))
-    start = (page - 1) * PAGE_SIZE
-    end = start + PAGE_SIZE
-    songs_page = all_songs[start:end]
-
-    content = "\n".join(f"{start + i + 1}. {name}" for i, name in enumerate(songs_page))
-    return content or "📭 Không có kết quả.", total_pages, f"Trang {page}/{total_pages}"
+    content = "\n".join(f"{(page-1) * PAGE_SIZE + i + 1}. {name}" for i, name in enumerate(songs_page))
+    return content or "📭 Không có kết quả.", page, f"Trang {page}/{total_pages}"
 
 # ---------- Index thư mục ----------
+
+
 def find_common_files(folder1, folder2):
     files1 = {f for f in os.listdir(folder1) if f.endswith((".mp3", ".wav"))}
     files2 = {f for f in os.listdir(folder2) if f.endswith((".mp3", ".wav"))}
     return list(files1.intersection(files2))
+
+
 def list_folders(base_path):
     if not os.path.exists(base_path):
         return []
@@ -73,6 +130,8 @@ def list_folders(base_path):
         name for name in os.listdir(base_path)
         if os.path.isdir(os.path.join(base_path, name))
     ]
+
+
 def index_folder_gradio(folder_name):
     folder_path = os.path.join(source_dir, folder_name)
     if not os.path.exists(folder_path):
@@ -111,22 +170,29 @@ def display_matched_segments(results, result_dir, data_dir, recognize_file):
         for song_q in value.offsets:
             for idex, song_seg in enumerate(song_q):
                 html_segments += f"<strong>🎶 Bài hát: {song_name}</strong><br>"
-                html_segments+="<div style='display: flex; flex-direction: row; margin-bottom: 20px;'>"
+                html_segments += "<div style='display: flex; flex-direction: row; margin-bottom: 20px;'>"
                 for idx2, song in enumerate(song_seg.all()):
                     file_out = os.path.join(
                         result_dir,
                         f"s{idex_s}_c{song_seg.count}_{song_name}_seg{idex}_{idx2}_{song.start_time}_{song.end_time}.mp3"
                     )
-                    label = "Bản gốc" if idx2 == 0 else "Query"
-                    html_segments += f"""
-                    <div style="margin-bottom: 20px;">
-                        <strong>🎯 Đoạn {idex_s}.{idex}.{idx2} ({label}):</strong><br>
-                        <span>🕒 {song.start_time}s → {song.end_time}s</span><br>
-                        <audio controls src="/file={file_out}"></audio>
-                    </div>
-                    """
-                html_segments+="</div>"
-                
+                    if os.path.exists(file_out):
+                        label = "Bản gốc" if idx2 == 0 else "Query"
+                        html_segments += f"""
+                        <div style="margin-bottom: 20px;">
+                            <strong>🎯 Đoạn {idex_s}.{idex}.{idx2} ({label}):</strong><br>
+                            <span>🕒 {song.start_time}s → {song.end_time}s</span><br>
+                            <audio controls src="/file={file_out}"></audio>
+                        </div>
+                        """
+                    else:
+                        html_segments += f"""
+                        <div style="margin-bottom: 20px;">
+                            <strong>❌ Không tìm thấy file:</strong><br>
+                            <span>🕒 {song.start_time}s → {song.end_time}s</span><br>
+                        </div>
+                        """
+                html_segments += "</div>"
 
     # Thêm scroll box
     scroll_box = f"""
@@ -143,13 +209,14 @@ def run_and_display_segments(file):
         return display_matched_segments(results, app_query.result_dir, app_query. data_dir, file)
     else:
         return [gr.Markdown("⚠️ Không tìm thấy đoạn nào trùng khớp.")]
-    
+
+
 def update_folder_choices():
     folders = list_folders(source_dir)
     return gr.update(choices=folders)
 
 
-#delete song
+# delete song
 def delete_song(song_name):
     try:
         conn = psycopg2.connect(**config['database'])
@@ -171,13 +238,17 @@ def delete_song(song_name):
         return f"🗑️ Đã xóa bài: {song_name}"
     except Exception as e:
         return f"❌ Lỗi khi xóa: {e}"
+
+
 def delete_and_update(song_name):
     result = delete_song(song_name)
     updated_songs = fetch_songs()
     return result, gr.update(choices=updated_songs)
+
+
 # ---------- Giao diện Gradio ----------
 with gr.Blocks(title="Dejavu Audio Fingerprint 🎼") as app:
-    
+
     gr.Markdown("## 🎵 Dejavu Audio Fingerprint App")
 
     with gr.Tabs():

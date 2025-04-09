@@ -20,8 +20,18 @@ services:
       - DATA_INDEX=/data/index
       - DATA_RESULT=/data/reusts
       - SOURCE_INDEX=/source
+    ports:
+      - 8000:7860
     depends_on:
       - db
+    networks:
+      - db_network
+  redis:
+    image: redis:latest
+    container_name: redis
+    ports:
+      - "6379:6379"
+    restart: unless-stopped
     networks:
       - db_network
 networks:
