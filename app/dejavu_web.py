@@ -148,6 +148,33 @@ def update_folder_choices():
     folders = list_folders(source_dir)
     return gr.update(choices=folders)
 
+
+#delete song
+def delete_song(song_name):
+    try:
+        conn = psycopg2.connect(**config['database'])
+        cur = conn.cursor()
+
+        # Xóa trong DB
+        # cur.execute("DELETE FROM fingerprints WHERE song_id = (SELECT id FROM songs WHERE song_name = %s)", (song_name,))
+        cur.execute("DELETE FROM songs WHERE song_name = %s", (song_name,))
+        conn.commit()
+
+        cur.close()
+        conn.close()
+
+        # Xóa file vật lý nếu tồn tại
+        file_path = os.path.join(app_query.data_dir, song_name)
+        if os.path.exists(file_path):
+            os.remove(file_path)
+
+        return f"🗑️ Đã xóa bài: {song_name}"
+    except Exception as e:
+        return f"❌ Lỗi khi xóa: {e}"
+def delete_and_update(song_name):
+    result = delete_song(song_name)
+    updated_songs = fetch_songs()
+    return result, gr.update(choices=updated_songs)
 # ---------- Giao diện Gradio ----------
 with gr.Blocks(title="Dejavu Audio Fingerprint 🎼") as app:
     
@@ -157,7 +184,10 @@ with gr.Blocks(title="Dejavu Audio Fingerprint 🎼") as app:
         # --- Tab 1: Quản lý bài hát ---
         with gr.TabItem("♫ Quản lý bài hát"):
             gr.Markdown("### 🎶 Danh sách bài hát đã index")
-
+            with gr.Row():
+                delete_dropdown = gr.Dropdown(choices=fetch_songs(), label="🎵 Chọn bài để xoá", interactive=True)
+                delete_button = gr.Button("🗑️ Xóa bài")
+                delete_result = gr.Textbox(label="Trạng thái xoá", interactive=False)
             with gr.Row():
                 keyword_input = gr.Textbox(placeholder="🔍 Tìm kiếm theo tên...", scale=3)
                 search_btn = gr.Button("Tìm")
@@ -168,6 +198,7 @@ with gr.Blocks(title="Dejavu Audio Fingerprint 🎼") as app:
                 page_label = gr.Textbox(label="Trang", interactive=False, max_lines=1, scale=2)
 
             song_output = gr.Textbox(label="Danh sách bài hát", lines=12)
+            delete_button.click(fn=delete_and_update, inputs=delete_dropdown, outputs=[delete_result, delete_dropdown])
 
             current_page = gr.State(1)
 
@@ -181,7 +212,7 @@ with gr.Blocks(title="Dejavu Audio Fingerprint 🎼") as app:
 
             # Load mặc định ban đầu
             app.load(fn=update_list, inputs=[current_page, keyword_input], outputs=[song_output, current_page, page_label])
-
+            app.load(fn=lambda: gr.update(choices=fetch_songs()), outputs=delete_dropdown)
         # --- Tab 2: Index thư mục ---
         with gr.TabItem("♪ Index thư mục"):
             gr.Markdown("### 📁 Chọn thư mục để index")
